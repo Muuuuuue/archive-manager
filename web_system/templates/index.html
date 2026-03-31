@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}首页 - 文件编号与归档系统{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8 text-center py-5">
+        <h1 class="mb-4">欢迎使用文件编号与归档系统</h1>
+        <p class="text-muted mb-5">请选择您要进行的操作</p>
+    </div>
+</div>
+
+{% if token %}
+<div class="row justify-content-center">
+    <div class="col-md-5 mb-4">
+        <a href="{{ url_for('apply_page', token=token) }}" class="text-decoration-none">
+            <div class="card feature-card h-100">
+                <div class="card-body text-center py-5">
+                    <div class="feature-icon apply">
+                        <i class="bi bi-file-earmark-plus"></i>
+                    </div>
+                    <h4 class="card-title">文件编号申请</h4>
+                    <p class="card-text text-muted">申请新的文件编号，系统将自动生成唯一编号</p>
+                </div>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-5 mb-4">
+        <a href="{{ url_for('archive_page', token=token) }}" class="text-decoration-none">
+            <div class="card feature-card h-100">
+                <div class="card-body text-center py-5">
+                    <div class="feature-icon archive">
+                        <i class="bi bi-folder2-open"></i>
+                    </div>
+                    <h4 class="card-title">文件归档查询</h4>
+                    <p class="card-text text-muted">查询文件归档状态，查看归档记录</p>
+                </div>
+            </div>
+        </a>
+    </div>
+</div>
+
+{% if is_admin %}
+<div class="row justify-content-center mt-4">
+    <div class="col-md-5 mb-4">
+        <a href="{{ url_for('rules_page', token=token) }}" class="text-decoration-none">
+            <div class="card feature-card h-100">
+                <div class="card-body text-center py-5">
+                    <div class="feature-icon" style="background-color: #9C27B0;">
+                        <i class="bi bi-gear"></i>
+                    </div>
+                    <h4 class="card-title">规则维护</h4>
+                    <p class="card-text text-muted">管理文件类型、编号规则和存储路径</p>
+                </div>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-5 mb-4">
+        <a href="{{ url_for('admin_page', token=token) }}" class="text-decoration-none">
+            <div class="card feature-card h-100">
+                <div class="card-body text-center py-5">
+                    <div class="feature-icon" style="background-color: #00BCD4;">
+                        <i class="bi bi-speedometer2"></i>
+                    </div>
+                    <h4 class="card-title">管理后台</h4>
+                    <p class="card-text text-muted">查看统计数据、错误日志和系统状态</p>
+                </div>
+            </div>
+        </a>
+    </div>
+</div>
+{% endif %}
+
+{% else %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body text-center py-5">
+                <i class="bi bi-shield-lock" style="font-size: 64px; color: #95A5A6;"></i>
+                <h4 class="mt-4">需要访问令牌</h4>
+                <p class="text-muted">请通过有效的访问链接进入系统</p>
+                <p class="text-muted small">如果您没有访问链接，请联系管理员获取</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

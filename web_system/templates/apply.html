@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block title %}文件编号申请 - 文件编号与归档系统{% endblock %}
+
+{% block content %}
+<!-- 面包屑导航 -->
+<nav aria-label="breadcrumb" class="mb-4">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('index', token=token) }}">首页</a></li>
+        <li class="breadcrumb-item active">文件编号申请</li>
+    </ol>
+</nav>
+
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-file-earmark-plus me-2"></i>填写申请信息
+            </div>
+            <div class="card-body p-4">
+                <form id="applyForm">
+                    <input type="hidden" name="token" value="{{ token }}">
+                    
+                    <!-- 文件类型 -->
+                    <div class="mb-4">
+                        <label for="file_type" class="form-label">
+                            <span class="required">文件类型</span>
+                        </label>
+                        <select class="form-select form-select-lg" id="file_type" name="file_type" required>
+                            <option value="">请选择文件类型</option>
+                            {% for rule in file_types %}
+                            <option value="{{ rule.file_type }}" data-code="{{ rule.file_code }}">
+                                {{ rule.file_type }} ({{ rule.file_code }})
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">选择文件类型后，系统将自动生成编号</div>
+                    </div>
+                    
+                    <!-- 申请人 -->
+                    <div class="mb-4">
+                        <label for="applicant" class="form-label">
+                            <span class="required">申请人</span>
+                        </label>
+                        <input type="text" class="form-control form-control-lg" id="applicant" 
+                               name="applicant" placeholder="请输入申请人姓名" required>
+                    </div>
+                    
+                    <!-- 申请日期 -->
+                    <div class="mb-4">
+                        <label for="apply_date" class="form-label">
+                            <span class="required">申请日期</span>
+                        </label>
+                        <input type="date" class="form-control form-control-lg" id="apply_date" 
+                               name="apply_date" required>
+                    </div>
+                    
+                    <!-- 编号预览 -->
+                    <div class="mb-4">
+                        <label class="form-label">编号预览</label>
+                        <div class="preview-box">
+                            <span class="preview-number" id="previewNumber">-</span>
+                        </div>
+                    </div>
+                    
+                    <!-- 按钮 -->
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                        <a href="{{ url_for('index', token=token) }}" class="btn btn-secondary btn-lg">
+                            <i class="bi bi-x-lg me-2"></i>取消
+                        </a>
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <i class="bi bi-check-lg me-2"></i>确认申请
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// 设置默认日期为今天
+document.getElementById('apply_date').value = new Date().toISOString().split('T')[0];
+
+// 文件类型改变时更新预览
+let currentYear = new Date().getFullYear();
+
+document.getElementById('file_type').addEventListener('change', function() {
+    updatePreview();
+});
+
+document.getElementById('apply_date').addEventListener('change', function() {
+    currentYear = new Date(this.value).getFullYear();
+    updatePreview();
+});
+
+function updatePreview() {
+    const fileTypeSelect = document.getElementById('file_type');
+    const selectedOption = fileTypeSelect.options[fileTypeSelect.selectedIndex];
+    const fileCode = selectedOption.getAttribute('data-code');
+    
+    if (fileCode) {
+        // 这里只是预览，实际序号由后端生成
+        document.getElementById('previewNumber').textContent = fileCode + '-' + currentYear + '-XXX';
+    } else {
+        document.getElementById('previewNumber').textContent = '-';
+    }
+}
+
+// 表单提交
+document.getElementById('applyForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(this);
+    const submitBtn = this.querySelector('button[type="submit"]');
+    const originalText = submitBtn.innerHTML;
+    
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>提交中...';
+    
+    try {
+        const response = await fetch('/api/apply', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // 跳转到成功页面
+            window.location.href = '/success?file_number=' + encodeURIComponent(result.data.file_number) + '&token=' + encodeURIComponent(formData.get('token'));
+        } else {
+            alert(result.error || '申请失败，请重试');
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
+        }
+    } catch (error) {
+        alert('网络错误，请重试');
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+    }
+});
+</script>
+{% endblock %}

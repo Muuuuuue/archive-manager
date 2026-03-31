@@ -1,0 +1,12 @@
+# Web Framework
+Flask
+
+# Excel Processing
+pandas
+openpyxl
+
+# Git Operations
+GitPython
+
+# Task Scheduling
+schedule

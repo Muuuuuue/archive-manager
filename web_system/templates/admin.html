@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block title %}管理后台 - 文件编号与归档系统{% endblock %}
+
+{% block content %}
+<!-- 面包屑导航 -->
+<nav aria-label="breadcrumb" class="mb-4">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('index', token=token) }}">首页</a></li>
+        <li class="breadcrumb-item active">管理后台</li>
+    </ol>
+</nav>
+
+<h4 class="mb-4"><i class="bi bi-speedometer2 me-2"></i>系统概览</h4>
+
+<!-- 统计卡片 -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ stats.total_records }}</div>
+            <div class="stat-label">总记录数</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number text-warning">{{ stats.pending_count }}</div>
+            <div class="stat-label">待归档</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number text-success">{{ stats.archived_count }}</div>
+            <div class="stat-label">已归档</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number text-info">{{ stats.this_month_count }}</div>
+            <div class="stat-label">本月新增</div>
+        </div>
+    </div>
+</div>
+
+<!-- 超期未归档提醒 -->
+{% if overdue_records %}
+<div class="card border-danger mb-4">
+    <div class="card-header bg-danger text-white">
+        <i class="bi bi-exclamation-triangle me-2"></i>
+        超期未归档提醒（≥7天）
+        <span class="badge bg-light text-danger ms-2">{{ overdue_records|length }} 条</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>编号</th>
+                        <th>文件类型</th>
+                        <th>申请人</th>
+                        <th>申请日期</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for record in overdue_records %}
+                    <tr class="table-danger">
+                        <td><code>{{ record.file_number }}</code></td>
+                        <td>{{ record.file_type }}</td>
+                        <td>{{ record.applicant }}</td>
+                        <td>{{ record.apply_date }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="row">
+    <!-- 生成令牌 -->
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-key me-2"></i>生成合作伙伴令牌
+            </div>
+            <div class="card-body">
+                <form id="generateTokenForm">
+                    <input type="hidden" name="token" value="{{ token }}">
+                    <div class="mb-3">
+                        <label class="form-label">合作伙伴名称</label>
+                        <input type="text" class="form-control" name="partner_name" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-plus-lg me-2"></i>生成令牌
+                    </button>
+                </form>
+                <div id="tokenResult" class="mt-3 d-none">
+                    <div class="alert alert-success">
+                        <strong>令牌已生成：</strong>
+                        <code id="generatedToken" class="d-block mt-2"></code>
+                        <hr>
+                        <strong>访问链接：</strong>
+                        <a id="generatedLink" href="#" target="_blank" class="d-block mt-2"></a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 错误日志 -->
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-bug me-2"></i>最近错误日志
+            </div>
+            <div class="card-body p-0">
+                {% if error_logs %}
+                <div class="list-group list-group-flush">
+                    {% for log in error_logs %}
+                    <div class="list-group-item">
+                        <div class="d-flex w-100 justify-content-between">
+                            <small class="text-danger">{{ log.error_type }}</small>
+                            <small class="text-muted">{{ log.created_at }}</small>
+                        </div>
+                        <p class="mb-1 small">{{ log.error_message }}</p>
+                        {% if log.file_name %}
+                        <small class="text-muted">文件: {{ log.file_name }}</small>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div class="text-center py-4 text-muted">
+                    <i class="bi bi-check-circle" style="font-size: 32px;"></i>
+                    <p class="mt-2">暂无错误日志</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('generateTokenForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(this);
+    
+    try {
+        const response = await fetch('/api/generate-token', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            document.getElementById('generatedToken').textContent = result.data.token;
+            document.getElementById('generatedLink').textContent = result.data.url;
+            document.getElementById('generatedLink').href = result.data.url;
+            document.getElementById('tokenResult').classList.remove('d-none');
+        } else {
+            alert(result.error || '生成失败');
+        }
+    } catch (error) {
+        alert('网络错误，请重试');
+    }
+});
+</script>
+{% endblock %}

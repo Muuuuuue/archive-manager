@@ -76,7 +76,7 @@ if exist "config.env" (
     echo REMINDER_DAYS=7>> config.env
     echo.>> config.env
     echo # GitHub配置>> config.env
-    echo GITHUB_REPO=https://github.com/Muuuuuue/-.git>> config.env
+    echo GITHUB_REPO=https://github.com/Muuuuuue/archive-manager.git>> config.env
     echo GITHUB_BRANCH=main>> config.env
     echo GITHUB_TOKEN=>> config.env
     echo.>> config.env

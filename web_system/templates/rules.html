@@ -19,8 +19,31 @@
     </button>
 </div>
 
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="get" action="{{ url_for('rules_page') }}">
+            <input type="hidden" name="token" value="{{ token }}">
+            <div class="row g-2">
+                <div class="col-md-9">
+                    <input type="text" class="form-control" name="keyword" value="{{ keyword or '' }}" placeholder="按文件类型或文件代码模糊搜索">
+                </div>
+                <div class="col-md-2">
+                    <button class="btn btn-primary w-100" type="submit">搜索</button>
+                </div>
+                <div class="col-md-1">
+                    <a class="btn btn-secondary w-100" href="{{ url_for('rules_page', token=token) }}">重置</a>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- 规则列表 -->
 <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>规则列表</span>
+        <span class="badge bg-secondary">共 {{ total or rules|length }} 条</span>
+    </div>
     <div class="card-body p-0">
         <div class="table-responsive">
             <table class="table table-hover mb-0">
@@ -75,6 +98,25 @@
             </table>
         </div>
     </div>
+    {% if total_pages and total_pages > 1 %}
+    <div class="card-footer">
+        <nav>
+            <ul class="pagination justify-content-center mb-0">
+                {% if page > 1 %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('rules_page', token=token, keyword=keyword, page=page-1) }}">上一页</a></li>
+                {% endif %}
+                {% for p in range(1, total_pages + 1) %}
+                <li class="page-item {% if p == page %}active{% endif %}">
+                    <a class="page-link" href="{{ url_for('rules_page', token=token, keyword=keyword, page=p) }}">{{ p }}</a>
+                </li>
+                {% endfor %}
+                {% if page < total_pages %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('rules_page', token=token, keyword=keyword, page=page+1) }}">下一页</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+    </div>
+    {% endif %}
 </div>
 
 <!-- 添加规则模态框 -->

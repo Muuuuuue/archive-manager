@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import zipfile
 from datetime import datetime
 
 # 添加web_system到路径
@@ -15,6 +16,29 @@ from models import (
     get_file_rule_by_code, get_file_record_by_number,
     update_archive_status, add_error_log
 )
+
+
+def detect_page_count(file_path):
+    """识别页数（优先支持pdf/docx）"""
+    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        if ext == '.pdf':
+            # 不引入额外依赖的简易统计
+            with open(file_path, 'rb') as f:
+                data = f.read()
+            count = len(re.findall(rb'/Type\s*/Page\b', data))
+            return count if count > 0 else None
+        if ext == '.docx':
+            # docx无法稳定获取实际分页，使用app.xml中的Pages作为近似值
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                if 'docProps/app.xml' in zf.namelist():
+                    xml = zf.read('docProps/app.xml').decode('utf-8', errors='ignore')
+                    m = re.search(r'<Pages>(\d+)</Pages>', xml)
+                    if m:
+                        return int(m.group(1))
+    except Exception:
+        return None
+    return None
 
 
 def parse_file_number(filename):
@@ -32,7 +56,7 @@ def parse_file_number(filename):
     
     # 匹配格式：CODE-YEAR-SEQ
     # 如：DRA-2026-001, IIR-2026-001, URS-2026-001
-    pattern = r'^([A-Z]+)-(\d{4})-(\d{3})$'
+    pattern = r'^([A-Z]+)-(\d{4})-(\d{3})(?:_Rev(\d+)\.0)?$'
     match = re.match(pattern, name)
     
     if match:
@@ -40,6 +64,7 @@ def parse_file_number(filename):
             'file_code': match.group(1),
             'year': int(match.group(2)),
             'seq': int(match.group(3)),
+            'revision_no': int(match.group(4)) if match.group(4) else 0,
             'full_number': name
         }
     
@@ -86,17 +111,12 @@ def move_file(source_path, target_path, filename):
         # 确保目标文件夹存在
         os.makedirs(target_path, exist_ok=True)
         
-        # 目标文件完整路径（若重名自动加后缀）
+        # 目标文件完整路径
         target_file_path = os.path.join(target_path, filename)
+        
+        # 检查文件是否已存在（重名移到pending，由人工处理升版）
         if os.path.exists(target_file_path):
-            base, ext = os.path.splitext(filename)
-            counter = 1
-            while True:
-                candidate = os.path.join(target_path, f"{base}_{counter}{ext}")
-                if not os.path.exists(candidate):
-                    target_file_path = candidate
-                    break
-                counter += 1
+            return False, None, f"文件已存在: {target_file_path}"
         
         # 移动文件
         shutil.move(source_path, target_file_path)
@@ -194,11 +214,13 @@ def classify_and_move_file(filepath, email_subject=''):
     record = get_file_record_by_number(file_info['full_number'])
     
     if record:
+        page_count = detect_page_count(target_file_path)
         # 更新已有记录
         update_archive_status(
             record_id=record['id'],
             archiver='系统自动归档',
-            archive_path=target_file_path
+            archive_path=target_file_path,
+            page_count=page_count
         )
         print(f"  已更新记录状态: {file_info['full_number']}")
     else:

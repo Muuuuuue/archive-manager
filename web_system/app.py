@@ -3,8 +3,10 @@ Flask Web应用 - 文件编号与归档系统
 """
 import os
 import sys
+import io
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, send_file
+import pandas as pd
 
 # 加载环境变量
 def load_config():
@@ -29,7 +31,10 @@ from models import (
     add_file_rule, update_file_rule,
     verify_token, create_partner_token,
     add_error_log, get_error_logs,
-    get_statistics, get_pending_overdue_records
+    get_statistics, get_pending_overdue_records,
+    create_revision_record, create_delete_request,
+    get_delete_requests, review_delete_request, get_voided_records, restore_voided_record,
+    search_records_for_modal, search_file_rules, get_record_detail
 )
 
 # 创建Flask应用
@@ -124,10 +129,11 @@ def apply_page():
         flash('无效的访问令牌', 'error')
         return redirect(url_for('index'))
     
-    # 获取文件类型列表
-    file_types = get_file_rules(active_only=True)
-    
-    return render_template('apply.html', token=token, file_types=file_types)
+    return render_template(
+        'apply.html',
+        token=token,
+        file_types=get_file_rules(active_only=True)
+    )
 
 
 @app.route('/archive')
@@ -147,10 +153,25 @@ def archive_page():
     # 获取查询参数
     keyword = request.args.get('keyword', '')
     status = request.args.get('status', '')
+    file_type = request.args.get('file_type', '')
+    applicant = request.args.get('applicant', '')
+    date_start = request.args.get('date_start', '')
+    date_end = request.args.get('date_end', '')
+    date_field = request.args.get('date_field', 'apply_date')
     page = int(request.args.get('page', 1))
     
     # 获取记录列表
-    records, total = get_file_records(keyword=keyword, status=status, page=page, limit=20)
+    records, total = get_file_records(
+        keyword=keyword,
+        status=status,
+        page=page,
+        limit=20,
+        file_type=file_type,
+        applicant=applicant,
+        date_start=date_start,
+        date_end=date_end,
+        date_field=date_field
+    )
     
     # 计算分页
     total_pages = (total + 19) // 20
@@ -163,7 +184,13 @@ def archive_page():
                           total_pages=total_pages,
                           keyword=keyword,
                           status=status,
-                          is_admin=token_info.get('is_admin', False))
+                          file_type=file_type,
+                          applicant=applicant,
+                          date_start=date_start,
+                          date_end=date_end,
+                          date_field=date_field,
+                          file_types=get_file_rules(active_only=True),
+                          is_admin=True)
 
 
 @app.route('/rules')
@@ -171,8 +198,12 @@ def archive_page():
 def rules_page():
     """规则维护页面（管理员）"""
     token = request.args.get('token', '')
-    rules = get_file_rules(active_only=False)
-    return render_template('rules.html', token=token, rules=rules)
+    keyword = request.args.get('keyword', '')
+    page = int(request.args.get('page', 1))
+    rules, total = search_file_rules(keyword=keyword, page=page, limit=20)
+    total_pages = (total + 19) // 20
+    return render_template('rules.html', token=token, rules=rules, keyword=keyword,
+                           page=page, total=total, total_pages=total_pages)
 
 
 @app.route('/admin')
@@ -189,12 +220,16 @@ def admin_page():
     
     # 获取超期未归档记录
     overdue_records = get_pending_overdue_records(days=7)
+    delete_requests = get_delete_requests(status='待审核')
+    voided_records = get_voided_records()
     
     return render_template('admin.html', 
                           token=token, 
                           stats=stats,
                           error_logs=error_logs,
-                          overdue_records=overdue_records)
+                          overdue_records=overdue_records,
+                          delete_requests=delete_requests,
+                          voided_records=voided_records)
 
 
 @app.route('/success')
@@ -218,35 +253,59 @@ def api_apply():
         applicant = data.get('applicant', '').strip()
         apply_date = data.get('apply_date', '').strip()
         token = data.get('token', '').strip()
+        action_type = data.get('action_type', 'new').strip().lower()
+        base_record_id = data.get('base_record_id', '').strip()
+        delete_reason = data.get('delete_reason', '').strip()
         
         # 验证参数
-        if not file_type:
-            return jsonify({'success': False, 'error': '请选择文件类型'}), 400
         if not applicant:
             return jsonify({'success': False, 'error': '请填写申请人姓名'}), 400
         if not apply_date:
             return jsonify({'success': False, 'error': '请选择申请日期'}), 400
         if not token:
             return jsonify({'success': False, 'error': '缺少访问令牌'}), 401
+        if action_type == 'new' and not file_type:
+            return jsonify({'success': False, 'error': '请选择文件类型'}), 400
         
         # 验证令牌
         token_info = verify_token(token)
         if not token_info:
             return jsonify({'success': False, 'error': '无效的访问令牌'}), 401
         
-        # 获取文件规则
-        rule = get_file_rule_by_type(file_type)
-        if not rule:
-            return jsonify({'success': False, 'error': '无效的文件类型'}), 400
-        
-        # 创建记录
-        result = create_file_record(
-            file_code=rule['file_code'],
-            file_type=file_type,
-            applicant=applicant,
-            apply_date=apply_date,
-            creator_token=token
-        )
+        if action_type == 'revision':
+            if not base_record_id:
+                return jsonify({'success': False, 'error': '请选择需要升版的记录'}), 400
+            result = create_revision_record(
+                base_record_id=int(base_record_id),
+                applicant=applicant,
+                apply_date=apply_date,
+                operator_token=token
+            )
+        elif action_type == 'delete':
+            if not base_record_id:
+                return jsonify({'success': False, 'error': '请选择需要删除的记录'}), 400
+            if not delete_reason:
+                return jsonify({'success': False, 'error': '请填写删除原因'}), 400
+            req = create_delete_request(
+                record_id=int(base_record_id),
+                requester_token=token,
+                reason=delete_reason
+            )
+            return jsonify({'success': True, 'message': '删除申请已提交，等待管理员审核', 'data': req})
+        else:
+            # 获取文件规则
+            rule = get_file_rule_by_type(file_type)
+            if not rule:
+                return jsonify({'success': False, 'error': '无效的文件类型'}), 400
+
+            # 创建记录
+            result = create_file_record(
+                file_code=rule['file_code'],
+                file_type=file_type,
+                applicant=applicant,
+                apply_date=apply_date,
+                creator_token=token
+            )
         
         return jsonify({
             'success': True,
@@ -264,12 +323,33 @@ def api_apply():
 def api_archive():
     """API：获取归档记录列表"""
     try:
+        token = request.args.get('token', '')
+        if not token:
+            return jsonify({'success': False, 'error': '缺少访问令牌'}), 401
+        token_info = verify_token(token)
+        if not token_info:
+            return jsonify({'success': False, 'error': '无效的访问令牌'}), 401
+
         keyword = request.args.get('keyword', '')
         status = request.args.get('status', '')
+        file_type = request.args.get('file_type', '')
+        applicant = request.args.get('applicant', '')
+        date_start = request.args.get('date_start', '')
+        date_end = request.args.get('date_end', '')
         page = int(request.args.get('page', 1))
         limit = int(request.args.get('limit', 20))
         
-        records, total = get_file_records(keyword=keyword, status=status, page=page, limit=limit)
+        records, total = get_file_records(
+            keyword=keyword,
+            status=status,
+            page=page,
+            limit=limit,
+            file_type=file_type,
+            applicant=applicant,
+            date_start=date_start,
+            date_end=date_end,
+            date_field=request.args.get('date_field', 'apply_date')
+        )
         
         return jsonify({
             'success': True,
@@ -286,6 +366,98 @@ def api_archive():
         return jsonify({'success': False, 'error': '查询失败'}), 500
 
 
+@app.route('/api/records/search', methods=['GET'])
+def api_search_records():
+    """弹窗记录选择：后端分页+模糊搜索"""
+    try:
+        token = request.args.get('token', '')
+        if not token:
+            return jsonify({'success': False, 'error': '缺少访问令牌'}), 401
+        if not verify_token(token):
+            return jsonify({'success': False, 'error': '无效的访问令牌'}), 401
+
+        keyword = request.args.get('keyword', '')
+        only_not_voided = request.args.get('only_not_voided', 'true').lower() != 'false'
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 20))
+        rows, total = search_records_for_modal(
+            keyword=keyword,
+            page=page,
+            limit=limit,
+            only_not_voided=only_not_voided
+        )
+        return jsonify({
+            'success': True,
+            'data': {'items': rows, 'total': total, 'page': page, 'limit': limit}
+        })
+    except Exception as e:
+        add_error_log('RECORD_SEARCH_ERROR', str(e))
+        return jsonify({'success': False, 'error': '查询失败'}), 500
+
+
+@app.route('/api/archive/export', methods=['GET'])
+def api_export_archive():
+    """导出归档记录Excel（管理员可导出全部，合作伙伴仅自己）"""
+    try:
+        token = request.args.get('token', '')
+        if not token:
+            return jsonify({'success': False, 'error': '缺少访问令牌'}), 401
+        if not verify_token(token):
+            return jsonify({'success': False, 'error': '无效的访问令牌'}), 401
+
+        keyword = request.args.get('keyword', '')
+        status = request.args.get('status', '')
+        file_type = request.args.get('file_type', '')
+        applicant = request.args.get('applicant', '')
+        date_start = request.args.get('date_start', '')
+        date_end = request.args.get('date_end', '')
+        date_field = request.args.get('date_field', 'apply_date')
+        ids_raw = request.args.get('ids', '').strip()
+        ids = [int(x) for x in ids_raw.split(',') if x.strip().isdigit()] if ids_raw else None
+
+        records, _ = get_file_records(
+            keyword=keyword,
+            status=status,
+            page=1,
+            limit=100000,
+            file_type=file_type,
+            applicant=applicant,
+            date_start=date_start,
+            date_end=date_end,
+            ids=ids,
+            date_field=date_field
+        )
+
+        export_rows = []
+        for r in records:
+            export_rows.append({
+                'ID': r.get('id'),
+                '文件编号': r.get('file_number'),
+                '版本号': f"Rev{int(r.get('revision_no', 0))}.0" if int(r.get('revision_no', 0)) > 0 else '',
+                '文件类型': r.get('file_type'),
+                '申请人': r.get('applicant'),
+                '申请日期': r.get('apply_date'),
+                '状态': r.get('status'),
+                '归档人': r.get('archiver'),
+                '归档日期': r.get('archive_date'),
+                '筛选日期字段': '归档日期' if date_field == 'archive_date' else '申请日期',
+                '归档路径': r.get('archive_path'),
+                '作废原因': r.get('void_reason') or ''
+            })
+
+        df = pd.DataFrame(export_rows)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='归档记录')
+        output.seek(0)
+        filename = f"archive_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return send_file(output, as_attachment=True, download_name=filename,
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        add_error_log('ARCHIVE_EXPORT_ERROR', str(e))
+        return jsonify({'success': False, 'error': '导出失败'}), 500
+
+
 @app.route('/api/archive/<int:record_id>', methods=['PUT'])
 def api_update_archive(record_id):
     """API：更新归档状态"""
@@ -294,6 +466,7 @@ def api_update_archive(record_id):
         token = data.get('token', '')
         archiver = data.get('archiver', '')
         archive_path = data.get('archive_path', '')
+        page_count = data.get('page_count')
         
         if not token:
             return jsonify({'success': False, 'error': '缺少访问令牌'}), 401
@@ -303,7 +476,13 @@ def api_update_archive(record_id):
             return jsonify({'success': False, 'error': '无效的访问令牌'}), 401
         
         # 更新归档状态
-        success = update_archive_status(record_id, archiver, archive_path)
+        page_count_value = None
+        if page_count not in (None, ''):
+            try:
+                page_count_value = int(page_count)
+            except Exception:
+                page_count_value = None
+        success = update_archive_status(record_id, archiver, archive_path, page_count=page_count_value)
         
         if success:
             return jsonify({'success': True, 'message': '归档状态已更新'})
@@ -315,13 +494,37 @@ def api_update_archive(record_id):
         return jsonify({'success': False, 'error': '更新失败'}), 500
 
 
+@app.route('/api/archive/<int:record_id>/detail', methods=['GET'])
+def api_archive_detail(record_id):
+    """获取记录详情"""
+    try:
+        token = request.args.get('token', '')
+        if not token:
+            return jsonify({'success': False, 'error': '缺少访问令牌'}), 401
+        if not verify_token(token):
+            return jsonify({'success': False, 'error': '无效的访问令牌'}), 401
+        detail = get_record_detail(record_id)
+        if not detail:
+            return jsonify({'success': False, 'error': '记录不存在'}), 404
+        return jsonify({'success': True, 'data': detail})
+    except Exception as e:
+        add_error_log('ARCHIVE_DETAIL_ERROR', str(e))
+        return jsonify({'success': False, 'error': '查询详情失败'}), 500
+
+
 @app.route('/api/rules', methods=['GET'])
 @require_admin
 def api_get_rules():
     """API：获取文件规则列表"""
     try:
-        rules = get_file_rules(active_only=False)
-        return jsonify({'success': True, 'data': rules})
+        keyword = request.args.get('keyword', '')
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 20))
+        rules, total = search_file_rules(keyword=keyword, page=page, limit=limit)
+        return jsonify({
+            'success': True,
+            'data': {'items': rules, 'total': total, 'page': page, 'limit': limit}
+        })
     except Exception as e:
         add_error_log('RULES_QUERY_ERROR', str(e))
         return jsonify({'success': False, 'error': '查询失败'}), 500
@@ -430,6 +633,44 @@ def api_generate_token():
     except Exception as e:
         add_error_log('GENERATE_TOKEN_ERROR', str(e))
         return jsonify({'success': False, 'error': '生成令牌失败'}), 500
+
+
+@app.route('/api/delete-requests/<int:request_id>/review', methods=['POST'])
+@require_admin
+def api_review_delete_request(request_id):
+    """管理员审核删除申请"""
+    try:
+        data = request.get_json(silent=True) or request.form
+        action = data.get('action', '').strip().lower()
+        comment = data.get('comment', '').strip()
+        if action not in ('approve', 'reject'):
+            return jsonify({'success': False, 'error': '无效操作'}), 400
+        ok = review_delete_request(
+            request_id=request_id,
+            approved=(action == 'approve'),
+            reviewer='管理员',
+            review_comment=comment
+        )
+        if not ok:
+            return jsonify({'success': False, 'error': '申请不存在或已处理'}), 400
+        return jsonify({'success': True, 'message': '审核完成'})
+    except Exception as e:
+        add_error_log('DELETE_REVIEW_ERROR', str(e))
+        return jsonify({'success': False, 'error': '审核失败'}), 500
+
+
+@app.route('/api/voided-records/<int:record_id>/restore', methods=['POST'])
+@require_admin
+def api_restore_voided_record(record_id):
+    """管理员恢复已作废记录"""
+    try:
+        ok = restore_voided_record(record_id, reviewer='管理员')
+        if not ok:
+            return jsonify({'success': False, 'error': '恢复失败，记录不存在'}), 400
+        return jsonify({'success': True, 'message': '记录已恢复'})
+    except Exception as e:
+        add_error_log('VOIDED_RESTORE_ERROR', str(e))
+        return jsonify({'success': False, 'error': '恢复失败'}), 500
 
 
 # ==================== 初始化 ====================

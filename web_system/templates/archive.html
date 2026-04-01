@@ -16,26 +16,54 @@
     <div class="card-body">
         <form method="get" action="{{ url_for('archive_page') }}">
             <input type="hidden" name="token" value="{{ token }}">
-            <div class="row g-3">
-                <div class="col-md-4">
+            <div class="row g-3 mb-2">
+                <div class="col-md-3">
                     <input type="text" class="form-control" name="keyword" 
                            placeholder="搜索编号、类型、申请人..." value="{{ keyword }}">
+                </div>
+                <div class="col-md-3">
+                    <select class="form-select" name="file_type">
+                        <option value="">全部类型</option>
+                        {% for t in file_types %}
+                        <option value="{{ t.file_type }}" {% if file_type == t.file_type %}selected{% endif %}>{{ t.file_type }} ({{ t.file_code }})</option>
+                        {% endfor %}
+                    </select>
                 </div>
                 <div class="col-md-3">
                     <select class="form-select" name="status">
                         <option value="">全部状态</option>
                         <option value="待归档" {% if status == '待归档' %}selected{% endif %}>待归档</option>
                         <option value="已归档" {% if status == '已归档' %}selected{% endif %}>已归档</option>
+                        <option value="已作废" {% if status == '已作废' %}selected{% endif %}>已作废</option>
                     </select>
                 </div>
                 <div class="col-md-3">
-                    <button type="submit" class="btn btn-primary w-100">
+                    <input type="text" class="form-control" name="applicant" value="{{ applicant }}" placeholder="申请人">
+                </div>
+            </div>
+            <div class="row g-3">
+                <div class="col-md-2">
+                    <select class="form-select" name="date_field">
+                        <option value="apply_date" {% if date_field != 'archive_date' %}selected{% endif %}>按申请日期</option>
+                        <option value="archive_date" {% if date_field == 'archive_date' %}selected{% endif %}>按归档日期</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <input type="date" class="form-control" name="date_start" value="{{ date_start }}" title="从">
+                    <div class="form-text">从……</div>
+                </div>
+                <div class="col-md-3">
+                    <input type="date" class="form-control" name="date_end" value="{{ date_end }}" title="到">
+                    <div class="form-text">到……</div>
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-primary w-100 text-nowrap">
                         <i class="bi bi-search me-2"></i>搜索
                     </button>
                 </div>
                 <div class="col-md-2">
                     <a href="{{ url_for('archive_page', token=token) }}" class="btn btn-secondary w-100">
-                        <i class="bi bi-arrow-counterclockwise me-2"></i>重置
+                        重置
                     </a>
                 </div>
             </div>
@@ -47,17 +75,25 @@
 <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-list me-2"></i>归档记录列表</span>
-        <span class="badge bg-secondary">共 {{ total }} 条</span>
+        <div>
+            <span class="badge bg-secondary me-2">共 {{ total }} 条</span>
+            <button class="btn btn-sm btn-outline-success" onclick="exportExcel()">
+                <i class="bi bi-file-earmark-excel me-1"></i>导出Excel
+            </button>
+        </div>
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
             <table class="table table-hover mb-0">
                 <thead>
                     <tr>
+                        <th><input type="checkbox" id="checkAll"></th>
                         <th>编号</th>
+                        <th>版本</th>
                         <th>文件类型</th>
                         <th>申请人</th>
                         <th>申请日期</th>
+                        <th>页数</th>
                         <th>状态</th>
                         <th>归档路径</th>
                         {% if is_admin %}
@@ -68,17 +104,20 @@
                 <tbody>
                     {% for record in records %}
                     <tr>
+                        <td><input type="checkbox" class="record-check" value="{{ record.id }}"></td>
                         <td><code>{{ record.file_number }}</code></td>
+                        <td>{% if record.revision_no and record.revision_no > 0 %}Rev{{ record.revision_no }}.0{% else %}-{% endif %}</td>
                         <td>{{ record.file_type }}</td>
                         <td>{{ record.applicant }}</td>
                         <td>{{ record.apply_date }}</td>
+                        <td>{{ record.page_count if record.page_count else '-' }}</td>
                         <td>
                             {% if record.status == '待归档' %}
-                                <span class="status-badge status-pending">待归档</span>
+                                <span class="status-badge status-pending text-nowrap">待归档</span>
                             {% elif record.status == '已归档' %}
-                                <span class="status-badge status-archived">已归档</span>
+                                <span class="status-badge status-archived text-nowrap">已归档</span>
                             {% else %}
-                                <span class="status-badge status-overdue">{{ record.status }}</span>
+                                <span class="status-badge status-overdue text-nowrap">{{ record.status }}</span>
                             {% endif %}
                         </td>
                         <td>
@@ -92,6 +131,9 @@
                         </td>
                         {% if is_admin %}
                         <td>
+                            <button class="btn btn-sm btn-outline-primary me-1" onclick="showDetail({{ record.id }})">
+                                Detail
+                            </button>
                             {% if record.status == '待归档' %}
                             <button class="btn btn-sm btn-success" onclick="archiveRecord({{ record.id }})">
                                 <i class="bi bi-check-lg"></i> 确认归档
@@ -102,7 +144,7 @@
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="{% if is_admin %}7{% else %}6{% endif %}" class="text-center py-5 text-muted">
+                        <td colspan="{% if is_admin %}11{% else %}10{% endif %}" class="text-center py-5 text-muted">
                             <i class="bi bi-inbox" style="font-size: 48px;"></i>
                             <p class="mt-3">暂无记录</p>
                         </td>
@@ -120,7 +162,7 @@
             <ul class="pagination justify-content-center mb-0">
                 {% if page > 1 %}
                 <li class="page-item">
-                    <a class="page-link" href="{{ url_for('archive_page', token=token, page=page-1, keyword=keyword, status=status) }}">
+                    <a class="page-link" href="{{ url_for('archive_page', token=token, page=page-1, keyword=keyword, status=status, file_type=file_type, applicant=applicant, date_start=date_start, date_end=date_end, date_field=date_field) }}">
                         <i class="bi bi-chevron-left"></i>
                     </a>
                 </li>
@@ -133,14 +175,14 @@
                     </li>
                     {% else %}
                     <li class="page-item">
-                        <a class="page-link" href="{{ url_for('archive_page', token=token, page=p, keyword=keyword, status=status) }}">{{ p }}</a>
+                        <a class="page-link" href="{{ url_for('archive_page', token=token, page=p, keyword=keyword, status=status, file_type=file_type, applicant=applicant, date_start=date_start, date_end=date_end, date_field=date_field) }}">{{ p }}</a>
                     </li>
                     {% endif %}
                 {% endfor %}
                 
                 {% if page < total_pages %}
                 <li class="page-item">
-                    <a class="page-link" href="{{ url_for('archive_page', token=token, page=page+1, keyword=keyword, status=status) }}">
+                    <a class="page-link" href="{{ url_for('archive_page', token=token, page=page+1, keyword=keyword, status=status, file_type=file_type, applicant=applicant, date_start=date_start, date_end=date_end, date_field=date_field) }}">
                         <i class="bi bi-chevron-right"></i>
                     </a>
                 </li>
@@ -149,6 +191,20 @@
         </nav>
     </div>
     {% endif %}
+</div>
+
+<div class="modal fade" id="detailModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-card-list me-2"></i>记录详情</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2" id="detailBody"></div>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
@@ -188,5 +244,59 @@ async function archiveRecord(recordId) {
     }
 }
 {% endif %}
+
+async function showDetail(recordId) {
+    const response = await fetch(`/api/archive/${recordId}/detail?token={{ token }}`);
+    const result = await response.json();
+    if (!result.success) {
+        alert(result.error || '查询失败');
+        return;
+    }
+    const d = result.data;
+    const rows = [
+        ['文件类型', d.file_type],
+        ['文件编号', d.file_number],
+        ['版本', d.revision_no && d.revision_no > 0 ? `Rev${d.revision_no}.0` : '-'],
+        ['页数', d.page_count || '-'],
+        ['申请人', d.applicant || '-'],
+        ['归档人', d.archiver || '-'],
+        ['申请日期', d.apply_date || '-'],
+        ['归档日期', d.archive_date || '-'],
+        ['是否已作废', d.is_voided ? '是' : '否'],
+        ['状态', d.status || '-'],
+        ['归档路径', d.archive_path || '-']
+    ];
+    if (d.is_voided) {
+        rows.push(['作废原因', d.void_reason || '-']);
+        rows.push(['作废申请人', d.void_requester || '-']);
+        rows.push(['作废批准人', d.void_approver || '-']);
+        rows.push(['作废日期', d.voided_at || '-']);
+    }
+    const body = document.getElementById('detailBody');
+    body.innerHTML = rows.map(([k, v]) => `
+        <div class="col-md-3 text-muted">${k}</div>
+        <div class="col-md-9">${v}</div>
+    `).join('');
+    new bootstrap.Modal(document.getElementById('detailModal')).show();
+}
+
+const checkAll = document.getElementById('checkAll');
+if (checkAll) {
+    checkAll.addEventListener('change', function () {
+        document.querySelectorAll('.record-check').forEach(el => { el.checked = this.checked; });
+    });
+}
+
+function exportExcel() {
+    const params = new URLSearchParams(window.location.search);
+    params.set('token', '{{ token }}');
+    const selected = Array.from(document.querySelectorAll('.record-check:checked')).map(el => el.value);
+    if (selected.length > 0) {
+        params.set('ids', selected.join(','));
+    } else {
+        params.delete('ids');
+    }
+    window.location.href = '/api/archive/export?' + params.toString();
+}
 </script>
 {% endblock %}

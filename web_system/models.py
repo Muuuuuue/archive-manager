@@ -10,6 +10,14 @@ from typing import List, Dict, Optional, Tuple
 DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'file_archive.db')
 
 
+def _ensure_column(cursor: sqlite3.Cursor, table_name: str, column_name: str, column_def: str):
+    """为旧库补齐字段（幂等）"""
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    existing = {row[1] for row in cursor.fetchall()}
+    if column_name not in existing:
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+
+
 def get_db_connection() -> sqlite3.Connection:
     """获取数据库连接"""
     conn = sqlite3.connect(DB_PATH)
@@ -42,6 +50,15 @@ def init_database():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    _ensure_column(cursor, 'file_records', 'revision_no', 'INTEGER DEFAULT 0')
+    _ensure_column(cursor, 'file_records', 'is_voided', 'BOOLEAN DEFAULT 0')
+    _ensure_column(cursor, 'file_records', 'voided_at', 'TIMESTAMP')
+    _ensure_column(cursor, 'file_records', 'void_reason', 'TEXT')
+    _ensure_column(cursor, 'file_records', 'void_requester', 'TEXT')
+    _ensure_column(cursor, 'file_records', 'void_approver', 'TEXT')
+    _ensure_column(cursor, 'file_records', 'record_action', "TEXT DEFAULT 'NEW'")
+    _ensure_column(cursor, 'file_records', 'base_record_id', 'INTEGER')
+    _ensure_column(cursor, 'file_records', 'page_count', 'INTEGER')
     
     # 序号计数器表
     cursor.execute('''
@@ -84,6 +101,31 @@ def init_database():
             error_type TEXT NOT NULL,
             error_message TEXT NOT NULL,
             file_name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS delete_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_id INTEGER NOT NULL,
+            requester_token TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT DEFAULT '待审核',
+            reviewer TEXT,
+            review_comment TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TIMESTAMP
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS voided_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_id INTEGER NOT NULL,
+            file_number TEXT NOT NULL,
+            void_reason TEXT NOT NULL,
+            voided_by TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -252,8 +294,78 @@ def create_file_record(file_code: str, file_type: str, applicant: str,
         conn.close()
 
 
-def get_file_records(keyword: str = '', status: str = '', page: int = 1, 
-                     limit: int = 20) -> Tuple[List[Dict], int]:
+def create_revision_record(base_record_id: int, applicant: str, apply_date: str, operator_token: str) -> Dict:
+    """基于已有记录创建升版记录（Rev1.0、Rev2.0...）"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT * FROM file_records WHERE id = ?', (base_record_id,))
+        base = cursor.fetchone()
+        if not base:
+            raise ValueError('原始记录不存在')
+
+        root_id = base['base_record_id'] if base['base_record_id'] else base_record_id
+        cursor.execute('''
+            SELECT COALESCE(MAX(revision_no), 0) as max_revision
+            FROM file_records
+            WHERE id = ? OR base_record_id = ?
+        ''', (root_id, root_id))
+        current = cursor.fetchone()['max_revision']
+        revision_no = int(current) + 1
+        revision_number = f"{base['file_number'].split('_Rev')[0]}_Rev{revision_no}.0"
+
+        cursor.execute('''
+            INSERT INTO file_records
+            (file_code, file_number, file_type, applicant, apply_date, status,
+             creator_token, revision_no, record_action, base_record_id)
+            VALUES (?, ?, ?, ?, ?, '待归档', ?, ?, 'REVISION', ?)
+        ''', (
+            base['file_code'], revision_number, base['file_type'],
+            applicant, apply_date, operator_token, revision_no, root_id
+        ))
+        conn.commit()
+        return {
+            'id': cursor.lastrowid,
+            'file_number': revision_number,
+            'revision_no': revision_no,
+            'status': '待归档'
+        }
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def create_delete_request(record_id: int, requester_token: str, reason: str) -> Dict:
+    """提交删除申请（所有用户可对任意记录提交审核申请）"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT * FROM file_records WHERE id = ?', (record_id,))
+        record = cursor.fetchone()
+        if not record:
+            raise ValueError('记录不存在')
+
+        cursor.execute('''
+            INSERT INTO delete_requests (record_id, requester_token, reason, status)
+            VALUES (?, ?, ?, '待审核')
+        ''', (record_id, requester_token, reason))
+        conn.commit()
+        return {'request_id': cursor.lastrowid, 'status': '待审核'}
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def get_file_records(keyword: str = '', status: str = '', page: int = 1,
+                     limit: int = 20, token: str = '',
+                     is_admin: bool = False, file_type: str = '',
+                     applicant: str = '', date_start: str = '',
+                     date_end: str = '', ids: Optional[List[int]] = None,
+                     date_field: str = 'apply_date') -> Tuple[List[Dict], int]:
     """
     获取文件记录列表
     
@@ -269,14 +381,36 @@ def get_file_records(keyword: str = '', status: str = '', page: int = 1,
     
     if keyword:
         conditions.append('''
-            (file_number LIKE ? OR file_type LIKE ? OR applicant LIKE ?)
+            (file_number LIKE ? OR file_type LIKE ? OR applicant LIKE ? OR file_code LIKE ?)
         ''')
         like_keyword = f'%{keyword}%'
-        params.extend([like_keyword, like_keyword, like_keyword])
+        params.extend([like_keyword, like_keyword, like_keyword, like_keyword])
     
     if status:
         conditions.append('status = ?')
         params.append(status)
+
+    if file_type:
+        conditions.append('file_type = ?')
+        params.append(file_type)
+
+    if applicant:
+        conditions.append('applicant LIKE ?')
+        params.append(f'%{applicant}%')
+
+    date_col = 'archive_date' if date_field == 'archive_date' else 'apply_date'
+    if date_start:
+        conditions.append(f'{date_col} >= ?')
+        params.append(date_start)
+
+    if date_end:
+        conditions.append(f'{date_col} <= ?')
+        params.append(date_end)
+
+    if ids:
+        placeholders = ','.join(['?'] * len(ids))
+        conditions.append(f'id IN ({placeholders})')
+        params.extend(ids)
     
     where_clause = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
     
@@ -299,6 +433,39 @@ def get_file_records(keyword: str = '', status: str = '', page: int = 1,
     conn.close()
     
     return records, total
+
+
+def search_records_for_modal(keyword: str = '', page: int = 1, limit: int = 20,
+                             only_not_voided: bool = True) -> Tuple[List[Dict], int]:
+    """弹窗记录选择查询（按文件类型/文件代码/编号模糊）"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    conditions = []
+    params = []
+
+    if only_not_voided:
+        conditions.append('COALESCE(is_voided, 0) = 0')
+
+    if keyword:
+        like_kw = f'%{keyword}%'
+        conditions.append('(file_type LIKE ? OR file_code LIKE ? OR file_number LIKE ?)')
+        params.extend([like_kw, like_kw, like_kw])
+
+    where_clause = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+    cursor.execute(f'SELECT COUNT(*) as total FROM file_records {where_clause}', params)
+    total = cursor.fetchone()['total']
+
+    offset = (page - 1) * limit
+    cursor.execute(f'''
+        SELECT id, file_number, file_code, file_type, applicant, apply_date, revision_no, is_voided, status
+        FROM file_records
+        {where_clause}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    ''', params + [limit, offset])
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows, total
 
 
 def get_file_record_by_id(record_id: int) -> Optional[Dict]:
@@ -325,16 +492,35 @@ def get_file_record_by_number(file_number: str) -> Optional[Dict]:
     return dict(row) if row else None
 
 
-def update_archive_status(record_id: int, archiver: str, archive_path: str) -> bool:
+def get_accessible_records(token: str, is_admin: bool = False) -> List[Dict]:
+    """获取当前用户可操作记录（升版/删除申请）"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if is_admin:
+        cursor.execute('''
+            SELECT id, file_number, file_type, applicant, apply_date, revision_no, is_voided
+            FROM file_records ORDER BY created_at DESC LIMIT 500
+        ''')
+    else:
+        cursor.execute('''
+            SELECT id, file_number, file_type, applicant, apply_date, revision_no, is_voided
+            FROM file_records WHERE creator_token = ? ORDER BY created_at DESC LIMIT 500
+        ''', (token,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def update_archive_status(record_id: int, archiver: str, archive_path: str, page_count: Optional[int] = None) -> bool:
     """更新归档状态"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
     cursor.execute('''
         UPDATE file_records 
-        SET status = '已归档', archiver = ?, archive_date = ?, archive_path = ?, updated_at = ?
+        SET status = '已归档', archiver = ?, archive_date = ?, archive_path = ?, page_count = ?, updated_at = ?
         WHERE id = ?
-    ''', (archiver, datetime.now().strftime('%Y-%m-%d'), archive_path, 
+    ''', (archiver, datetime.now().strftime('%Y-%m-%d'), archive_path, page_count,
           datetime.now().strftime('%Y-%m-%d %H:%M:%S'), record_id))
     
     conn.commit()
@@ -407,6 +593,32 @@ def get_file_rules(active_only: bool = True) -> List[Dict]:
     conn.close()
     
     return rules
+
+
+def search_file_rules(keyword: str = '', page: int = 1, limit: int = 20) -> Tuple[List[Dict], int]:
+    """规则分页搜索（文件类型/文件代码模糊）"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    conditions = []
+    params = []
+    if keyword:
+        like_kw = f'%{keyword}%'
+        conditions.append('(file_type LIKE ? OR file_code LIKE ?)')
+        params.extend([like_kw, like_kw])
+    where_clause = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+
+    cursor.execute(f'SELECT COUNT(*) as total FROM file_rules {where_clause}', params)
+    total = cursor.fetchone()['total']
+    offset = (page - 1) * limit
+    cursor.execute(f'''
+        SELECT * FROM file_rules
+        {where_clause}
+        ORDER BY file_type
+        LIMIT ? OFFSET ?
+    ''', params + [limit, offset])
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows, total
 
 
 def get_file_rule_by_code(file_code: str) -> Optional[Dict]:
@@ -545,6 +757,113 @@ def get_error_logs(limit: int = 50) -> List[Dict]:
     return logs
 
 
+def get_delete_requests(status: str = '') -> List[Dict]:
+    """获取删除申请列表（管理员）"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    params = []
+    where = ''
+    if status:
+        where = 'WHERE dr.status = ?'
+        params.append(status)
+    cursor.execute(f'''
+        SELECT dr.*, fr.file_number, fr.file_type, fr.applicant
+        FROM delete_requests dr
+        LEFT JOIN file_records fr ON fr.id = dr.record_id
+        {where}
+        ORDER BY dr.created_at DESC
+    ''', params)
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def review_delete_request(request_id: int, approved: bool, reviewer: str, review_comment: str = '') -> bool:
+    """审核删除申请：通过则作废记录并入作废库"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT * FROM delete_requests WHERE id = ?', (request_id,))
+        req = cursor.fetchone()
+        if not req or req['status'] != '待审核':
+            return False
+
+        new_status = '已通过' if approved else '已驳回'
+        cursor.execute('''
+            UPDATE delete_requests
+            SET status = ?, reviewer = ?, review_comment = ?, reviewed_at = ?
+            WHERE id = ?
+        ''', (new_status, reviewer, review_comment, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), request_id))
+
+        if approved:
+            cursor.execute('SELECT * FROM file_records WHERE id = ?', (req['record_id'],))
+            record = cursor.fetchone()
+            if record:
+                cursor.execute('''
+                    UPDATE file_records
+                    SET status = '已作废', is_voided = 1, voided_at = ?, void_reason = ?, void_requester = ?, void_approver = ?, updated_at = ?
+                    WHERE id = ?
+                ''', (
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    req['reason'],
+                    req['requester_token'],
+                    reviewer,
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    req['record_id']
+                ))
+                cursor.execute('''
+                    INSERT INTO voided_records (record_id, file_number, void_reason, voided_by)
+                    VALUES (?, ?, ?, ?)
+                ''', (req['record_id'], record['file_number'], req['reason'], reviewer))
+
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_voided_records() -> List[Dict]:
+    """已作废记录库"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT vr.*, fr.file_type, fr.applicant
+        FROM voided_records vr
+        LEFT JOIN file_records fr ON fr.id = vr.record_id
+        ORDER BY vr.created_at DESC
+    ''')
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def restore_voided_record(record_id: int, reviewer: str) -> bool:
+    """恢复已作废记录"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            UPDATE file_records
+            SET status = '待归档', is_voided = 0, voided_at = NULL, void_reason = NULL,
+                void_requester = NULL, void_approver = NULL, updated_at = ?
+            WHERE id = ?
+        ''', (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), record_id))
+        if cursor.rowcount <= 0:
+            conn.rollback()
+            return False
+        cursor.execute('DELETE FROM voided_records WHERE record_id = ?', (record_id,))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 # ==================== 统计报表 ====================
 
 def get_statistics() -> Dict:
@@ -611,6 +930,34 @@ def get_pending_overdue_records(days: int = 7) -> List[Dict]:
     conn.close()
     
     return records
+
+
+def get_record_detail(record_id: int) -> Optional[Dict]:
+    """获取单条记录详情（含作废审核信息）"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM file_records WHERE id = ?', (record_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+    detail = dict(row)
+
+    cursor.execute('''
+        SELECT requester_token, reviewer, reviewed_at
+        FROM delete_requests
+        WHERE record_id = ? AND status = '已通过'
+        ORDER BY reviewed_at DESC, id DESC
+        LIMIT 1
+    ''', (record_id,))
+    req = cursor.fetchone()
+    if req:
+        detail['void_requester'] = detail.get('void_requester') or req['requester_token']
+        detail['void_approver'] = detail.get('void_approver') or req['reviewer']
+        detail['voided_at'] = detail.get('voided_at') or req['reviewed_at']
+
+    conn.close()
+    return detail
 
 
 if __name__ == '__main__':

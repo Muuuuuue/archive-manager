@@ -139,6 +139,85 @@
         </div>
     </div>
 </div>
+
+<!-- 删除申请审核 -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-trash me-2"></i>删除申请审核
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>记录ID</th>
+                        <th>编号</th>
+                        <th>申请人</th>
+                        <th>原因</th>
+                        <th>申请时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for dr in delete_requests %}
+                    <tr>
+                        <td>{{ dr.record_id }}</td>
+                        <td><code>{{ dr.file_number }}</code></td>
+                        <td>{{ dr.applicant }}</td>
+                        <td>{{ dr.reason }}</td>
+                        <td>{{ dr.created_at }}</td>
+                        <td>
+                            <button class="btn btn-sm btn-danger" onclick="reviewDeleteRequest({{ dr.id }}, 'approve')">通过</button>
+                            <button class="btn btn-sm btn-secondary" onclick="reviewDeleteRequest({{ dr.id }}, 'reject')">驳回</button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="text-center text-muted py-3">暂无待审核删除申请</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 已作废记录库 -->
+<div class="card">
+    <div class="card-header">
+        <i class="bi bi-archive me-2"></i>已作废文件编号库
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>记录ID</th>
+                        <th>编号</th>
+                        <th>作废原因</th>
+                        <th>作废人</th>
+                        <th>作废时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for vr in voided_records %}
+                    <tr>
+                        <td>{{ vr.record_id }}</td>
+                        <td><code>{{ vr.file_number }}</code></td>
+                        <td>{{ vr.void_reason }}</td>
+                        <td>{{ vr.voided_by }}</td>
+                        <td>{{ vr.created_at }}</td>
+                        <td>
+                            <button class="btn btn-sm btn-success" onclick="restoreVoided({{ vr.record_id }})">恢复</button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="text-center text-muted py-3">暂无作废记录</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -168,5 +247,37 @@ document.getElementById('generateTokenForm').addEventListener('submit', async fu
         alert('网络错误，请重试');
     }
 });
+
+async function reviewDeleteRequest(requestId, action) {
+    const comment = prompt('请输入审核备注（可为空）') || '';
+    const response = await fetch(`/api/delete-requests/${requestId}/review`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ token: '{{ token }}', action: action, comment: comment })
+    });
+    const result = await response.json();
+    if (result.success) {
+        alert('审核完成');
+        window.location.reload();
+    } else {
+        alert(result.error || '审核失败');
+    }
+}
+
+async function restoreVoided(recordId) {
+    if (!confirm('确认恢复该作废记录吗？')) return;
+    const response = await fetch(`/api/voided-records/${recordId}/restore`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ token: '{{ token }}' })
+    });
+    const result = await response.json();
+    if (result.success) {
+        alert('恢复成功');
+        window.location.reload();
+    } else {
+        alert(result.error || '恢复失败');
+    }
+}
 </script>
 {% endblock %}

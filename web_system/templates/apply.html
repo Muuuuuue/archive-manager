@@ -20,21 +20,43 @@
             <div class="card-body p-4">
                 <form id="applyForm">
                     <input type="hidden" name="token" value="{{ token }}">
+
+                    <div class="mb-4">
+                        <label for="action_type" class="form-label">
+                            <span class="required">申请类型</span>
+                        </label>
+                        <select class="form-select form-select-lg" id="action_type" name="action_type" required>
+                            <option value="new" selected>新申请</option>
+                            <option value="revision">升版申请</option>
+                            <option value="delete">删除申请</option>
+                        </select>
+                    </div>
                     
                     <!-- 文件类型 -->
-                    <div class="mb-4">
+                    <div class="mb-4" id="fileTypeGroup">
                         <label for="file_type" class="form-label">
                             <span class="required">文件类型</span>
                         </label>
                         <select class="form-select form-select-lg" id="file_type" name="file_type" required>
                             <option value="">请选择文件类型</option>
-                            {% for rule in file_types %}
-                            <option value="{{ rule.file_type }}" data-code="{{ rule.file_code }}">
-                                {{ rule.file_type }} ({{ rule.file_code }})
-                            </option>
-                            {% endfor %}
                         </select>
                         <div class="form-text">选择文件类型后，系统将自动生成编号</div>
+                    </div>
+
+                    <div class="mb-4 d-none" id="baseRecordGroup">
+                        <label class="form-label">
+                            <span class="required">选择历史记录</span>
+                        </label>
+                        <input type="hidden" id="base_record_id" name="base_record_id">
+                        <div class="input-group">
+                            <input type="text" class="form-control form-control-lg" id="selectedRecordText" placeholder="未选择记录" readonly>
+                            <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#recordPickerModal">
+                                选择
+                            </button>
+                        </div>
+                        <div class="form-text">
+                            可按文件类型、文件代码、编号模糊搜索；默认仅显示未作废记录
+                        </div>
                     </div>
                     
                     <!-- 申请人 -->
@@ -53,6 +75,14 @@
                         </label>
                         <input type="date" class="form-control form-control-lg" id="apply_date" 
                                name="apply_date" required>
+                    </div>
+
+                    <div class="mb-4 d-none" id="deleteReasonGroup">
+                        <label for="delete_reason" class="form-label">
+                            <span class="required">删除原因</span>
+                        </label>
+                        <textarea class="form-control" id="delete_reason" name="delete_reason" rows="3"
+                                  placeholder="请填写删除原因，提交后由管理员审核"></textarea>
                     </div>
                     
                     <!-- 编号预览 -->
@@ -77,6 +107,58 @@
         </div>
     </div>
 </div>
+
+<div class="modal fade" id="recordPickerModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-search me-2"></i>选择历史记录</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 mb-3">
+                    <div class="col-md-8">
+                        <input type="text" id="recordKeyword" class="form-control" placeholder="输入文件类型、文件代码或编号">
+                    </div>
+                    <div class="col-md-2">
+                        <button class="btn btn-primary w-100" type="button" onclick="searchRecords(1)">搜索</button>
+                    </div>
+                    <div class="col-md-2">
+                        <div class="form-check mt-2">
+                            <input class="form-check-input" type="checkbox" id="onlyNotVoided" checked>
+                            <label class="form-check-label" for="onlyNotVoided">仅未作废</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>编号</th>
+                                <th>代码</th>
+                                <th>类型</th>
+                                <th>申请人</th>
+                                <th>申请日期</th>
+                                <th>状态</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recordPickerBody">
+                            <tr><td colspan="7" class="text-center text-muted py-3">请输入关键字并搜索</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                    <small class="text-muted" id="recordPickerMeta">-</small>
+                    <div>
+                        <button class="btn btn-sm btn-outline-secondary" id="recordPrevBtn" type="button" onclick="changeRecordPage(-1)" disabled>上一页</button>
+                        <button class="btn btn-sm btn-outline-secondary" id="recordNextBtn" type="button" onclick="changeRecordPage(1)" disabled>下一页</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -86,8 +168,45 @@ document.getElementById('apply_date').value = new Date().toISOString().split('T'
 
 // 文件类型改变时更新预览
 let currentYear = new Date().getFullYear();
+let recordPickerPage = 1;
+let recordPickerTotal = 0;
+const recordPickerLimit = 10;
 
 document.getElementById('file_type').addEventListener('change', function() {
+    updatePreview();
+});
+
+document.getElementById('action_type').addEventListener('change', function() {
+    const actionType = this.value;
+    const fileTypeGroup = document.getElementById('fileTypeGroup');
+    const baseRecordGroup = document.getElementById('baseRecordGroup');
+    const deleteReasonGroup = document.getElementById('deleteReasonGroup');
+    const fileType = document.getElementById('file_type');
+    const baseRecord = document.getElementById('base_record_id');
+    const deleteReason = document.getElementById('delete_reason');
+
+    if (actionType === 'new') {
+        fileTypeGroup.classList.remove('d-none');
+        baseRecordGroup.classList.add('d-none');
+        deleteReasonGroup.classList.add('d-none');
+        fileType.required = true;
+        baseRecord.required = false;
+        deleteReason.required = false;
+    } else if (actionType === 'revision') {
+        fileTypeGroup.classList.add('d-none');
+        baseRecordGroup.classList.remove('d-none');
+        deleteReasonGroup.classList.add('d-none');
+        fileType.required = false;
+        baseRecord.required = true;
+        deleteReason.required = false;
+    } else {
+        fileTypeGroup.classList.add('d-none');
+        baseRecordGroup.classList.remove('d-none');
+        deleteReasonGroup.classList.remove('d-none');
+        fileType.required = false;
+        baseRecord.required = true;
+        deleteReason.required = true;
+    }
     updatePreview();
 });
 
@@ -99,15 +218,97 @@ document.getElementById('apply_date').addEventListener('change', function() {
 function updatePreview() {
     const fileTypeSelect = document.getElementById('file_type');
     const selectedOption = fileTypeSelect.options[fileTypeSelect.selectedIndex];
-    const fileCode = selectedOption.getAttribute('data-code');
+    const fileCode = selectedOption ? selectedOption.getAttribute('data-code') : null;
+    const actionType = document.getElementById('action_type').value;
     
-    if (fileCode) {
+    if (actionType === 'revision') {
+        document.getElementById('previewNumber').textContent = '原编号-RevX.0';
+    } else if (actionType === 'delete') {
+        document.getElementById('previewNumber').textContent = '删除申请（待管理员审核）';
+    } else if (fileCode) {
         // 这里只是预览，实际序号由后端生成
         document.getElementById('previewNumber').textContent = fileCode + '-' + currentYear + '-XXX';
     } else {
         document.getElementById('previewNumber').textContent = '-';
     }
 }
+
+function selectRecord(record) {
+    document.getElementById('base_record_id').value = record.id;
+    document.getElementById('selectedRecordText').value =
+        `${record.file_number} | ${record.file_code} | ${record.file_type} | ${record.applicant}`;
+    const modalEl = document.getElementById('recordPickerModal');
+    const modal = bootstrap.Modal.getInstance(modalEl);
+    if (modal) modal.hide();
+}
+
+async function searchRecords(page = 1) {
+    recordPickerPage = page;
+    const keyword = document.getElementById('recordKeyword').value.trim();
+    const onlyNotVoided = document.getElementById('onlyNotVoided').checked;
+    const params = new URLSearchParams({
+        token: '{{ token }}',
+        keyword: keyword,
+        page: String(recordPickerPage),
+        limit: String(recordPickerLimit),
+        only_not_voided: onlyNotVoided ? 'true' : 'false'
+    });
+    const response = await fetch('/api/records/search?' + params.toString());
+    const result = await response.json();
+    const body = document.getElementById('recordPickerBody');
+    if (!result.success) {
+        body.innerHTML = '<tr><td colspan="7" class="text-center text-danger py-3">查询失败</td></tr>';
+        return;
+    }
+    const items = result.data.items || [];
+    recordPickerTotal = result.data.total || 0;
+    if (items.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">无匹配记录</td></tr>';
+    } else {
+        body.innerHTML = items.map(r => `
+            <tr>
+                <td><code>${r.file_number}</code></td>
+                <td><code>${r.file_code}</code></td>
+                <td>${r.file_type}</td>
+                <td>${r.applicant}</td>
+                <td>${r.apply_date}</td>
+                <td>${r.status || '-'}</td>
+                <td><button class="btn btn-sm btn-primary" type="button" data-id="${r.id}" data-number="${r.file_number}" data-code="${r.file_code}" data-type="${r.file_type}" data-applicant="${r.applicant}">选择</button></td>
+            </tr>
+        `).join('');
+        body.querySelectorAll('button[data-id]').forEach(btn => {
+            btn.onclick = () => selectRecord({
+                id: Number(btn.dataset.id),
+                file_number: btn.dataset.number,
+                file_code: btn.dataset.code,
+                file_type: btn.dataset.type,
+                applicant: btn.dataset.applicant
+            });
+        });
+    }
+    const totalPages = Math.max(1, Math.ceil(recordPickerTotal / recordPickerLimit));
+    document.getElementById('recordPickerMeta').textContent = `第 ${recordPickerPage} / ${totalPages} 页，共 ${recordPickerTotal} 条`;
+    document.getElementById('recordPrevBtn').disabled = recordPickerPage <= 1;
+    document.getElementById('recordNextBtn').disabled = recordPickerPage >= totalPages;
+}
+
+function changeRecordPage(delta) {
+    const totalPages = Math.max(1, Math.ceil(recordPickerTotal / recordPickerLimit));
+    const target = recordPickerPage + delta;
+    if (target < 1 || target > totalPages) return;
+    searchRecords(target);
+}
+
+document.getElementById('recordKeyword').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        searchRecords(1);
+    }
+});
+
+document.getElementById('recordPickerModal').addEventListener('shown.bs.modal', function () {
+    searchRecords(1);
+});
 
 // 表单提交
 document.getElementById('applyForm').addEventListener('submit', async function(e) {
@@ -129,8 +330,13 @@ document.getElementById('applyForm').addEventListener('submit', async function(e
         const result = await response.json();
         
         if (result.success) {
-            // 跳转到成功页面
-            window.location.href = '/success?file_number=' + encodeURIComponent(result.data.file_number) + '&token=' + encodeURIComponent(formData.get('token'));
+            if (formData.get('action_type') === 'delete') {
+                alert(result.message || '删除申请已提交');
+                window.location.reload();
+            } else {
+                // 跳转到成功页面
+                window.location.href = '/success?file_number=' + encodeURIComponent(result.data.file_number) + '&token=' + encodeURIComponent(formData.get('token'));
+            }
         } else {
             alert(result.error || '申请失败，请重试');
             submitBtn.disabled = false;
